@@ -1,7 +1,9 @@
 import 'dart:async';
+import '../models/archive_report.dart';
 import '../models/brute_force.dart';
 import '../models/task.dart';
 import '../models/file_type.dart';
+import 'archive_auto_extractor.dart';
 import 'file_identifier.dart';
 import 'extractor_service.dart';
 import 'hashcat_service.dart';
@@ -35,14 +37,18 @@ class TaskOrchestrator {
   List<CrackTask> _sortedTasks = [];
   final Uuid _uuid = Uuid();
 
+  /// 破解成功后的自动解压。可注入，便于测试不依赖真实 hashcat。
+  final ArchiveAutoExtractor autoExtractor;
+
   TaskOrchestrator({
     required this.identifier,
     required this.extractor,
     required this.hashcatFactory,
     required this.dictService,
     required this.workDir,
+    ArchiveAutoExtractor? autoExtractor,
     this.onUpdated,
-  });
+  }) : autoExtractor = autoExtractor ?? ArchiveAutoExtractor();
 
   CrackTask? getTask(String id) => _tasks[id];
   List<CrackTask> get allTasks => _sortedTasks;
@@ -69,6 +75,11 @@ class TaskOrchestrator {
       if (!await _identifyFile(task)) return;
       if (!await _extractHash(task)) return;
       if (!await _performCracking(task)) return;
+
+      // 破解成功后的自动解压。放在最后、且自身隔离异常——
+      // 密码已经拿到，解压只是把"拿到密码"闭环成"拿到文件"这一步，
+      // 任何解压失败都不能反过来把任务标成失败。
+      await _extractArchive(task);
 
       task.finishedAt = DateTime.now();
       _notify(task);
@@ -177,6 +188,69 @@ class TaskOrchestrator {
         _activeHashcat.remove(task.id);
       }
     }
+  }
+
+  /// 正在解压的任务（用于支持解压中途取消）。
+  ///
+  /// 不能复用 [cancel] 里那套"改任务状态"的做法：任务此时已经是终态
+  /// [TaskStatus.cracked]，改成 cancelled 会把"密码已破出来"这个事实抹掉。
+  final Set<String> _cancelExtractRequested = {};
+
+  /// 破解成功后自动解压。
+  ///
+  /// **整段异常被隔离**：解压只是附加产出，任何失败都只写进
+  /// [CrackTask.extractReport]，绝不改变任务状态。用户已经拿到密码了，
+  /// 不能因为压缩包太烂就让他以为密码没破出来。
+  Future<void> _extractArchive(CrackTask task) async {
+    if (task.plainPassword.isEmpty) return;
+
+    if (!ArchiveAutoExtractor.supports(task.fileType)) {
+      task.extractReport = ArchiveReport(
+        status: ExtractStatus.skipped,
+        errorSummary: '该文件类型不参与自动解压',
+      );
+      _notify(task);
+      return;
+    }
+
+    task.extractReport = ArchiveReport(status: ExtractStatus.running);
+    task.log += '\n\n===== 自动解压：用密码解开压缩包 =====\n';
+    _notify(task);
+
+    try {
+      final report = await autoExtractor.run(
+        archivePath: task.filePath,
+        password: task.plainPassword,
+        type: task.fileType,
+        onUpdate: (r) {
+          task.extractReport = r;
+          _notify(task);
+        },
+        isCancelled: () => _cancelExtractRequested.contains(task.id),
+      );
+
+      task.extractReport = report;
+      _cancelExtractRequested.remove(task.id);
+
+      final r = report.repair;
+      if (r != null && r.attempted) {
+        task.log += '检测到 ZIP 目录损坏，已重建：救回 ${r.recoveredEntries} 条'
+            '${r.succeeded ? "" : "（重建未成功）"}\n';
+      }
+      task.log += '解压${report.status.label}'
+          '${report.outputDir.isEmpty ? "" : "：${report.outputDir}"}\n';
+      if (report.errorSummary != null && report.errorSummary!.isNotEmpty) {
+        task.log += '说明：${report.errorSummary}\n';
+      }
+    } catch (e) {
+      // 兜底：自动解压组件已自行捕获异常，这里防的是它初始化阶段的问题
+      task.extractReport = ArchiveReport(
+        status: ExtractStatus.failed,
+        errorSummary: '解压过程异常: $e',
+      );
+      task.log += '解压异常: $e\n';
+    }
+    _notify(task);
   }
 
   /// 对一个已经失败（或已取消）的任务重新发起**暴力破解**。
@@ -314,7 +388,17 @@ class TaskOrchestrator {
   void cancel(String taskId) {
     _activeHashcat[taskId]?.cancel();
     final task = _tasks[taskId];
-    if (task != null && !task.status.isTerminal) {
+    if (task == null) return;
+
+    // 正在解压时只请求中止解压，**不改任务状态**——此时任务已是
+    // "已破解"，把它标成"已取消"等于抹掉密码已破解这个事实。
+    final r = task.extractReport;
+    if (r != null && r.status == ExtractStatus.running) {
+      _cancelExtractRequested.add(taskId);
+      return;
+    }
+
+    if (!task.status.isTerminal) {
       task.status = TaskStatus.cancelled;
       task.finishedAt = DateTime.now();
       _notify(task);

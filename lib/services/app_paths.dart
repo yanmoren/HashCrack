@@ -100,6 +100,31 @@ class AppPaths {
     return '$runtimeRoot${Platform.pathSeparator}dicts';
   }
 
+  /// 内置 7-Zip 目录（7z.exe / 7z.dll / License.txt）
+  static String get sevenZipDir {
+    if (!isAvailable) return '';
+    return '$toolsDir${Platform.pathSeparator}7zip';
+  }
+
+  /// 内置 7-Zip 可执行文件——压缩包的解压引擎。
+  ///
+  /// **只认内置**：软件不在用户机器上联网获取二进制，
+  /// 也不借用系统已安装的 7-Zip。系统装没装、装的是哪个版本都不可控，
+  /// 那会让"同一份包在别人电脑上行为不一样"变成无从复现的偶发问题。
+  static String get sevenZipExe {
+    if (!isAvailable) return '';
+    final name = Platform.isWindows ? '7z.exe' : '7z';
+    for (final dir in [sevenZipDir, toolsDir]) {
+      if (dir.isEmpty) continue;
+      final p = '$dir${Platform.pathSeparator}$name';
+      if (File(p).existsSync()) return p;
+    }
+    return '';
+  }
+
+  /// 是否具备解压能力（内置 7-Zip 到位）
+  static bool get hasBundled7Zip => sevenZipExe.isNotEmpty;
+
   /// 供 UI 展示的诊断信息
   static String describe() {
     if (!isAvailable) {

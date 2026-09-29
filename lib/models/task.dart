@@ -1,3 +1,4 @@
+import 'archive_report.dart';
 import 'file_type.dart';
 
 enum TaskStatus {
@@ -83,6 +84,12 @@ class CrackTask {
   DateTime createdAt;
   DateTime? finishedAt;
 
+  /// 破解成功后的自动解压结果。
+  ///
+  /// 与 [status] 完全解耦：解压失败不影响任务显示「已破解」——
+  /// 密码是对的，解压只是附加产出，不该因为包太烂而让用户以为没破出来。
+  ArchiveReport? extractReport;
+
   CrackTask({
     required this.id,
     required this.filePath,
@@ -104,6 +111,7 @@ class CrackTask {
     this.totalCount = 0,
     required this.createdAt,
     this.finishedAt,
+    this.extractReport,
   });
 
   Map<String, dynamic> toMap() => {
@@ -124,6 +132,7 @@ class CrackTask {
         'etaSeconds': etaSeconds,
         'createdAt': createdAt.toIso8601String(),
         'finishedAt': finishedAt?.toIso8601String(),
+        'extractReport': extractReport?.toJson(),
       };
 
   factory CrackTask.fromMap(Map<String, dynamic> m) => CrackTask(
@@ -157,6 +166,10 @@ class CrackTask {
             DateTime.now(),
         finishedAt: m['finishedAt'] != null
             ? DateTime.tryParse(m['finishedAt'] as String)
+            : null,
+        extractReport: m['extractReport'] is Map
+            ? ArchiveReport.fromJson(
+                (m['extractReport'] as Map).cast<String, dynamic>())
             : null,
       );
 
