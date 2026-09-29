@@ -2,7 +2,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../state/app_state.dart';
-import '../state/license_controller.dart';
 import '../services/hashcat_service.dart';
 import '../utils/constants.dart';
 
@@ -48,8 +47,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _licenseCard(state, theme, context),
-          const SizedBox(height: 16),
           _infoCard(state, theme),
           const SizedBox(height: 16),
           if (state.isPcMode) ..._pcSettings(state, theme),
@@ -59,100 +56,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
-  }
-
-  Widget _licenseCard(AppState state, ThemeData theme, BuildContext ctx) {
-    final lic = ctx.watch<LicenseController>();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: [
-            Icon(
-              lic.isActivated
-                  ? Icons.verified_user
-                  : Icons.error_outline,
-              color: lic.isActivated
-                  ? const Color(0xFF4ADE80)
-                  : const Color(0xFFF87171),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    lic.isActivated
-                        ? '已授权'
-                        : '未授权',
-                    style: theme.textTheme.titleMedium,
-                  ),
-                  Text(
-                    lic.machineCode.isEmpty
-                        ? '无法采集机器码'
-                        : '机器码：${lic.machineCode}',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-            TextButton(
-              onPressed: () async {
-                // 重新输入激活码（用于更换机器码后的补码）
-                final input = await _promptActivation(ctx, lic);
-                if (input != null) {
-                  final err = await lic.activate(input);
-                  _snack(err == null ? '激活成功' : err!);
-                }
-              },
-              child: Text(lic.isActivated ? '更换码' : '去激活'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<String?> _promptActivation(
-      BuildContext ctx, LicenseController lic) async {
-    final ctl = TextEditingController();
-    final result = await showDialog<String>(
-      context: ctx,
-      builder: (dctx) => AlertDialog(
-        title: const Text('输入激活码'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '机器码：${lic.machineCode}',
-              style: Theme.of(dctx).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ctl,
-              autocorrect: false,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontFamily: 'monospace'),
-              decoration: const InputDecoration(
-                hintText: 'XXXXXX-XXXXXX-XXXXXX-XXXXXX',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(dctx).pop(),
-              child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.of(dctx).pop(ctl.text),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-    ctl.dispose();
-    return result;
   }
 
   Widget _infoCard(AppState state, ThemeData theme) {
@@ -425,6 +328,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               '自动识别 ZIP / PDF / Office / WiFi 握手包，'
               '提取哈希后执行字典+掩码自动策略；\n'
               '自动策略未命中时，可按字符集与长度自行发起暴力破解。',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '免费软件，无需激活码或授权，开箱即用。\n'
+              '遵循 GPLv3 发布。',
               style: theme.textTheme.bodySmall,
             ),
           ],

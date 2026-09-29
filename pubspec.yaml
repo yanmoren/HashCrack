@@ -26,10 +26,6 @@ dependencies:
   http: ^1.1.0
   # 设置持久化
   shared_preferences: ^2.2.1
-  # 授权：SHA256 / HMAC 签名
-  crypto: ^3.0.6
-  # 授权：Android 硬件指纹采集
-  device_info_plus: ^13.0.0
 
 dev_dependencies:
   flutter_test:

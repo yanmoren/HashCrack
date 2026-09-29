@@ -1,10 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'screens/home_screen.dart';
-import 'screens/license_screen.dart';
 import 'screens/mifare_screen.dart';
 import 'screens/settings_screen.dart';
-import 'state/license_controller.dart';
 
 class HashCrackApp extends StatelessWidget {
   const HashCrackApp({super.key});
@@ -15,28 +12,12 @@ class HashCrackApp extends StatelessWidget {
       title: 'HashCrack',
       debugShowCheckedModeBanner: false,
       theme: buildHashCrackTheme(Brightness.dark),
-      home: const _RootGate(),
+      home: const HomeScreen(),
       routes: {
         '/settings': (_) => const SettingsScreen(),
         '/mifare': (_) => const MifareScreen(),
       },
     );
-  }
-}
-
-/// 启动门卫：未激活则停在授权页，激活后才进入主界面。
-class _RootGate extends StatelessWidget {
-  const _RootGate();
-
-  @override
-  Widget build(BuildContext context) {
-    final ctrl = context.watch<LicenseController>();
-    if (ctrl.loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-    return ctrl.isActivated ? const HomeScreen() : const LicenseScreen();
   }
 }
 
