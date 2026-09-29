@@ -65,3 +65,7 @@ test*.hash
 *.potfile
 *.out.txt
 *.log
+
+# Python 打包脚本缓存
+__pycache__/
+*.pyc

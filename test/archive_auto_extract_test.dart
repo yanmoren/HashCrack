@@ -7,6 +7,8 @@ import 'package:hashcat_gui/models/file_type.dart';
 import 'package:hashcat_gui/services/app_paths.dart';
 import 'package:hashcat_gui/services/archive_auto_extractor.dart';
 
+import 'support/corrupt_zip.dart';
+
 /// 自动解压编排的测试：覆盖"直接解 → 失败则修 → 重试 → 阈值"整条决策链。
 void main() {
   late Directory tmp;
@@ -101,6 +103,37 @@ void main() {
     );
   });
 
+  test('修复重试的输出目录用原包名，不留 _repaired 与序号痕迹', () async {
+    seed(tmp.path, 'nm.bin');
+    pack('nm.zip', ['nm.bin'], password: 'Test1234');
+    final src = '${tmp.path}/nm.zip';
+    File(src).openSync(mode: FileMode.append)
+      ..truncateSync(centralDirOffset(src))
+      ..closeSync();
+
+    final r = await ArchiveAutoExtractor().run(
+      archivePath: src,
+      password: 'Test1234',
+      type: DetectedFileType.zip,
+    );
+
+    expect(r.status, ExtractStatus.success, reason: r.errorSummary ?? '');
+    expect(r.repair!.succeeded, isTrue, reason: '前提：确实走了修复重试');
+
+    // 重试解的是 `nm_repaired.zip`，但目录名必须回到原包的 `nm_解压`：
+    // `_repaired` 是内部实现痕迹，`(1)` 是首次尝试占位留下的残渣。
+    final sep = Platform.pathSeparator;
+    expect(r.outputDir, '${tmp.path}${sep}nm_解压');
+    expect(Directory('${tmp.path}${sep}nm_repaired_解压').existsSync(), isFalse,
+        reason: '不该把"修过"印在用户的文件夹名上');
+    expect(Directory('${tmp.path}${sep}nm_解压(1)').existsSync(), isFalse,
+        reason: '扶正后不该留下序号目录');
+    expect(
+      File('${r.outputDir}${sep}nm.bin').readAsBytesSync(),
+      equals(File('${tmp.path}${sep}nm.bin').readAsBytesSync()),
+    );
+  });
+
   test('超大包：仍然解开，但不留修复产物（省磁盘）', () async {
     seed(tmp.path, 'big.bin');
     pack('big.zip', ['big.bin'], password: 'Test1234');
@@ -143,6 +176,38 @@ void main() {
     expect(r.status, ExtractStatus.failed);
     expect(r.errorSummary, contains('密码错误'));
     expect(r.repair?.attempted, isNot(true));
+  });
+
+  test('加密包密文损坏：不得判成密码错误，完好的文件要留下', () async {
+    seed(tmp.path, 'g1.bin', size: 800);
+    seed(tmp.path, 'g2.bin', size: 800);
+    final packed = Process.runSync(
+      sevenZip,
+      [
+        'a', '-tzip', '-mx=0', '-pTest1234', '-mem=ZipCrypto',
+        '${tmp.path}/crcenc.zip', 'g1.bin', 'g2.bin',
+      ],
+      workingDirectory: tmp.path,
+    );
+    expect(packed.exitCode, 0, reason: packed.stdout + packed.stderr);
+
+    // 密码完全正确，只是 g1.bin 的密文被动过一个字节。7-Zip 无从分辨
+    // "密钥错"还是"密文被改过"，会报
+    // `CRC Failed in encrypted file. Wrong password?`——若照字面判成密码错误，
+    // 就会丢掉完好的 g2.bin，还彻底跳过结构修复。
+    flipByteInStoredEntry('${tmp.path}/crcenc.zip', 'g1.bin');
+
+    final r = await ArchiveAutoExtractor().run(
+      archivePath: '${tmp.path}/crcenc.zip',
+      password: 'Test1234',
+      type: DetectedFileType.zip,
+    );
+
+    expect(r.errorSummary, isNot(contains('密码错误')), reason: r.errorSummary ?? '');
+    expect(r.status, ExtractStatus.partial, reason: r.errorSummary ?? '');
+    expect(r.files.map((f) => f.relativePath), contains('g2.bin'),
+        reason: '完好的文件不能因为误判而丢');
+    expect(r.repair, isNotNull, reason: '数据损坏也必须进修复链路');
   });
 
   test('7z 损坏：不尝试结构修复（格式没有冗余，真修不了）', () async {

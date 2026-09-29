@@ -242,4 +242,125 @@ void main() {
         .length;
     expect(entries, 5, reason: '7-Zip 应列出 5 个条目');
   });
+
+  // ───────── 以下三例取自真实损坏样本「夫妻GAME.7z#」的结构特征 ─────────
+
+  test('含目录条目：零长度目录不得吞掉后续文件', () async {
+    Directory('${tmp.path}/sub').createSync(recursive: true);
+    File('${tmp.path}/sub/a.txt').writeAsStringSync('A' * 500);
+    File('${tmp.path}/sub/b.txt').writeAsStringSync('B' * 700);
+
+    final src = '${tmp.path}/withdir.zip';
+    final r = Process.runSync(
+      sevenZip,
+      ['a', '-tzip', '-mx=0', src, 'sub'],
+      workingDirectory: tmp.path,
+    );
+    expect(r.exitCode, 0, reason: r.stdout + r.stderr);
+
+    truncateTo(src, centralDirOffset(src));
+
+    final out = '${tmp.path}/withdir_repaired.zip';
+    final report = await ZipRepairService.repair(src, outputPath: out);
+
+    expect(report.succeeded, isTrue, reason: report.error ?? '');
+    expect(report.recoveredEntries, 3, reason: '1 个目录条目 + 2 个文件');
+    expect(sevenZipCanOpen(out), isTrue);
+
+    // 目录条目的压缩长度是 0，若被误判成"长度未知"，它会一直延伸到文件尾，
+    // 把后面两个文件整段吞掉——产物照样能打开，但只剩一条巨型记录。
+    // 因此这里必须逐条确认文件真的还在，只看"能打开"会漏掉这个错误。
+    final listing = Process.runSync(sevenZip, ['l', '-slt', out]).stdout.toString();
+    expect(listing, contains('a.txt'));
+    expect(listing, contains('b.txt'));
+  });
+
+  test('包前有伪装数据：中央目录偏移整体失效后仍能重建', () async {
+    final files = seedFiles('p', 3);
+    final plain = '${tmp.path}/plain.zip';
+    makeZip(plain, files);
+
+    // 真实样本就是在 ZIP 前塞了一段 MP4 头（1,187,694 字节），
+    // 中央目录里记的本地头偏移全部指向错误位置。
+    final prefix = Uint8List.fromList([
+      0x00, 0x00, 0x00, 0x20,
+      ...'ftypisom'.codeUnits,
+      ...List.filled(64 * 1024, 0x00),
+    ]);
+    final src = '${tmp.path}/prefixed.zip';
+    final sink = File(src).openSync(mode: FileMode.write);
+    sink.writeFromSync(prefix);
+    sink.writeFromSync(File(plain).readAsBytesSync());
+    sink.closeSync();
+
+    expect(sevenZipCanOpen(src), isFalse, reason: '前提：偏移失效后原包打不开');
+
+    final out = '${tmp.path}/prefixed_repaired.zip';
+    final report = await ZipRepairService.repair(src, outputPath: out);
+
+    expect(report.attempted, isTrue);
+    expect(report.succeeded, isTrue, reason: report.error ?? '');
+    expect(report.recoveredEntries, 3);
+    expect(sevenZipCanOpen(out), isTrue);
+
+    // 逐字节比对：证明定界用的是真实数据起点，而不是照抄失效的偏移
+    final exDir = '${tmp.path}/prefixed_out';
+    final x = Process.runSync(
+      sevenZip,
+      ['x', '-o$exDir', '-y', out],
+      workingDirectory: tmp.path,
+    );
+    expect(x.exitCode, 0, reason: x.stdout + x.stderr);
+    for (final name in files) {
+      expect(
+        File('$exDir/$name').readAsBytesSync(),
+        equals(File('${tmp.path}/$name').readAsBytesSync()),
+        reason: '$name 内容必须逐字节一致',
+      );
+    }
+  });
+
+  test('存储方法 + ZipCrypto + UTF-8 中文名：修复后原密码仍能逐字节解出', () async {
+    Directory('${tmp.path}/u').createSync(recursive: true);
+    File('${tmp.path}/u/中文名.txt').writeAsStringSync('中文内容 ${'x' * 300}');
+    File('${tmp.path}/u/plain.txt').writeAsStringSync('plain ${'y' * 200}');
+
+    // -mx=0 存储、-mcu=on 置 UTF-8 标志——这两点与真实样本一致
+    // （样本条目标志为 0x801：加密位 + UTF-8 位）。
+    final src = '${tmp.path}/encu.zip';
+    final r = Process.runSync(
+      sevenZip,
+      [
+        'a', '-tzip', '-mx=0', '-mcu=on',
+        '-pTest1234', '-mem=ZipCrypto', src, 'u',
+      ],
+      workingDirectory: tmp.path,
+    );
+    expect(r.exitCode, 0, reason: r.stdout + r.stderr);
+
+    truncateTo(src, centralDirOffset(src));
+
+    final out = '${tmp.path}/encu_repaired.zip';
+    final report = await ZipRepairService.repair(src, outputPath: out);
+    expect(report.succeeded, isTrue, reason: report.error ?? '');
+    expect(report.recoveredEntries, 3, reason: '1 个目录条目 + 2 个文件');
+
+    final exDir = '${tmp.path}/encu_out';
+    final x = Process.runSync(
+      sevenZip,
+      ['x', '-pTest1234', '-o$exDir', '-y', out],
+      workingDirectory: tmp.path,
+    );
+    expect(x.exitCode, 0, reason: '修复产物应能用原密码解开：${x.stdout}${x.stderr}');
+
+    // 名字按原字节搬运 + 标志位保留，7-Zip 才能正确还原中文名
+    expect(
+      File('$exDir/u/中文名.txt').readAsBytesSync(),
+      equals(File('${tmp.path}/u/中文名.txt').readAsBytesSync()),
+    );
+    expect(
+      File('$exDir/u/plain.txt').readAsBytesSync(),
+      equals(File('${tmp.path}/u/plain.txt').readAsBytesSync()),
+    );
+  });
 }

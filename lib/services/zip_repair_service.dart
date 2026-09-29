@@ -343,16 +343,41 @@ class ZipRepairService {
 
     final available = total - local.dataStart;
 
+    // 情况零：零长度条目（目录、空文件）。
+    //
+    // 必须单独处理：它的数据长度为 0，下一条目的本地头就**紧贴数据起点**。
+    // 若走下面的"向后找边界"，会被"紧贴起点不算边界"的守卫挡掉，进而把
+    // 文件剩余部分全部误算成本条数据——一个目录条目就能吞掉整个包，
+    // 重建出来的产物只剩一条巨型记录，还因为条目数自洽而谎报成功。
+    if (!local.hasDataDescriptor && comp == 0) {
+      return _Resolved(0, crc, uncomp, local.dataStart);
+    }
+
     // 情况一：长度明确且无 data descriptor——直接采信。
     // 这是绝大多数真实损坏包的形态（尾部被截断，各条目头完好）。
     if (!local.hasDataDescriptor && comp > 0) {
-      if (comp <= available) {
-        return _Resolved(comp, crc, uncomp, local.dataStart + comp);
+      if (comp > available) {
+        // 声明长度超出文件尾：数据被截断，有多少算多少
+        return available > 0
+            ? _Resolved(available, crc, uncomp, total)
+            : null;
       }
-      // 声明长度超出文件尾：数据被截断，有多少算多少
-      return available > 0
-          ? _Resolved(available, crc, uncomp, total)
-          : null;
+
+      final end = local.dataStart + comp;
+      if (await _looksLikeBoundary(raf, end, total)) {
+        return _Resolved(comp, crc, uncomp, end);
+      }
+
+      // 落点不是任何已知边界，有两种成因：
+      //   a) 本条长度是对的，只是它后面混进了不属于任何条目的孤儿数据；
+      //   b) 本条长度声明过长，把后面的条目整段盖住了。
+      // 盲目收紧会在 a) 情况下把好条目截断，所以必须区分：只有当声明区间
+      // **内部确实存在一个结构自洽的本地头**时，才认定是 b) 并收紧到它。
+      final covered = await _findCoveredEntry(raf, local.dataStart, end, total);
+      if (covered != null) {
+        return _Resolved(covered - local.dataStart, crc, uncomp, covered);
+      }
+      return _Resolved(comp, crc, uncomp, end);
     }
 
     // 情况二：长度未知（bit 3 或写 0）——向后找边界
@@ -372,6 +397,61 @@ class ZipRepairService {
     }
 
     return _Resolved(size, crc, uncomp, boundary.offset);
+  }
+
+  /// 判断 [offset] 处是否落在某个已知结构边界上。
+  ///
+  /// 用来验证"本条声明的数据长度"是否真的指向下一条目——健康包里必然如此。
+  /// 落点若不是边界，就说明长度声明不可信，需要收紧。
+  static Future<bool> _looksLikeBoundary(
+    RandomAccessFile raf,
+    int offset,
+    int total,
+  ) async {
+    if (offset == total) return true; // 数据一直延伸到文件尾，合法
+    if (offset < 0 || offset + 4 > total) return false;
+    final buf = await _readExact(raf, offset, 4);
+    if (buf == null) return false;
+    final v = _u32(buf, 0);
+    return v == _sigLocal ||
+        v == _sigCentral ||
+        v == _sigEocd ||
+        v == _sigZip64Eocd ||
+        v == _sigZip64Locator ||
+        v == _sigDescriptor;
+  }
+
+  /// 在 `[from, to)` 区间内寻找一个"被盖住的"本地文件头。
+  ///
+  /// 判定标准是**双重自洽**：候选头本身要能解析，且它声明的数据落点也必须
+  /// 落在已知边界上（或延伸到文件尾）。只看签名会把压缩/加密数据里偶然
+  /// 出现的 `PK\x03\x04` 当成条目——那会让本来完好的条目被无端截断。
+  static Future<int?> _findCoveredEntry(
+    RandomAccessFile raf,
+    int from,
+    int to,
+    int total,
+  ) async {
+    var cursor = from + 1;
+    var guard = 0;
+    while (cursor + _sizeLocalHeader <= to && guard++ < 64) {
+      final hit = await _findSignature(raf, cursor, to, _sigLocal);
+      if (hit < 0) return null;
+
+      final candidate = await _readLocalHeader(raf, hit, total);
+      if (candidate != null) {
+        final comp = candidate.storedCompressedSize;
+        if (!candidate.hasDataDescriptor && comp == 0) return hit;
+        if (comp > 0) {
+          final end = candidate.dataStart + comp;
+          if (end >= total || await _looksLikeBoundary(raf, end, total)) {
+            return hit;
+          }
+        }
+      }
+      cursor = hit + 1;
+    }
+    return null;
   }
 
   /// 从 [from] 起寻找下一个边界：下一个本地头 / 中央目录头 / 数据描述符。

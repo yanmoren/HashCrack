@@ -126,6 +126,10 @@ class ArchiveAutoExtractor {
 
     final retry = await extractService.extract(
       archivePath: repair.repairedPath!,
+      // 目录名以**原包**为准。重试解的是 `xxx_repaired.zip`，若顺着它取名，
+      // 用户拿到的是 `xxx_repaired_解压`——"修过"是我们内部的事，不该印在
+      // 他的文件夹上。
+      outputNameFrom: archivePath,
       password: password,
       type: type,
       onProgress: (p) {
@@ -143,6 +147,9 @@ class ArchiveAutoExtractor {
       if (result.outputDir.isNotEmpty) {
         await _discardDir(result.outputDir);
       }
+      // 首次尝试已占住 `<原名>_解压`，重试只能退让成 `<原名>_解压(1)`。
+      // 原目录刚腾空，这里把名字扶正。
+      await _promoteOutputDir(retry, archivePath);
       finalRepair = _withRepair(retry, repair).repair!;
     }
 
@@ -224,6 +231,32 @@ class ArchiveAutoExtractor {
       if (await f.exists()) await f.delete();
     } catch (_) {
       // 删不掉不影响解压结果；下次运行会因重名自动加序号，不会覆盖
+    }
+  }
+
+  /// 把重试的输出目录改回首选名（`<原包名>_解压`）。
+  ///
+  /// 只在首次尝试的目录腾空之后调用，所以目标名通常正好可用。改名失败
+  /// （目录被别的进程占着等）不影响任何结论——序号目录照样能用，只是名字
+  /// 难看，不值得为它把已经到手的解压结果判成失败。
+  ///
+  /// 若首选名仍被别人占着（比如上一次运行留下的目录），就保持现状：那说明
+  /// 这个名字确实有主，加序号才是对的。
+  Future<void> _promoteOutputDir(
+    ArchiveReport retry,
+    String originalArchivePath,
+  ) async {
+    final current = retry.outputDir;
+    if (current.isEmpty) return;
+    final preferred =
+        ArchiveExtractService.preferredOutputDirFor(originalArchivePath);
+    if (current == preferred) return;
+    try {
+      if (await Directory(preferred).exists()) return;
+      await Directory(current).rename(preferred);
+      retry.outputDir = preferred;
+    } catch (_) {
+      // 保留序号目录名
     }
   }
 

@@ -7,6 +7,8 @@ import 'package:hashcat_gui/models/file_type.dart';
 import 'package:hashcat_gui/services/app_paths.dart';
 import 'package:hashcat_gui/services/archive_extract_service.dart';
 
+import 'support/corrupt_zip.dart';
+
 /// 解压执行器的测试。
 ///
 /// 样本由内置 7-Zip 生成（真包，不是手搓的），验收标准是
@@ -183,5 +185,38 @@ void main() {
     expect(report.status, ExtractStatus.success);
     expect(report.files.length, 2);
     expect(report.totalBytes, 384);
+  });
+
+  test('密文被改坏（密码其实正确）：不得报成密码错误', () async {
+    seed('c1.bin', size: 800);
+    seed('c2.bin', size: 800);
+    // 用存储方式，密文位置才好算
+    final packed = Process.runSync(
+      sevenZip,
+      [
+        'a', '-tzip', '-mx=0', '-pTest1234', '-mem=ZipCrypto',
+        '${tmp.path}/crczip.zip', 'c1.bin', 'c2.bin',
+      ],
+      workingDirectory: tmp.path,
+    );
+    expect(packed.exitCode, 0, reason: packed.stdout + packed.stderr);
+
+    // 密码完全正确，只是 c1.bin 的密文被动过一个字节，解出的明文 CRC 必然
+    // 对不上。7-Zip 无从分辨"密钥错"还是"密文被改过"，会报
+    // `CRC Failed in encrypted file. Wrong password?` —— 而密码其实是对的。
+    flipByteInStoredEntry('${tmp.path}/crczip.zip', 'c1.bin');
+
+    final report = await service.extract(
+      archivePath: '${tmp.path}/crczip.zip',
+      password: 'Test1234',
+      type: DetectedFileType.zip,
+    );
+
+    expect(report.errorSummary, isNot(contains('密码错误')),
+        reason: '密文损坏不是密码错误：${report.errorSummary}');
+    expect(report.status, ExtractStatus.partial, reason: report.errorSummary ?? '');
+    // 没被改坏的 c2.bin 必须照常留下——误判成密码错误时整个输出目录会被
+    // 丢弃，用户白丢一个完好的文件
+    expect(report.files.map((f) => f.relativePath), contains('c2.bin'));
   });
 }

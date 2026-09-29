@@ -26,10 +26,14 @@ class ArchiveExtractService {
 
   static const Duration _listTimeout = Duration(seconds: 30);
 
+  /// [outputNameFrom] 决定输出目录用哪个名字，默认就是 [archivePath] 本身。
+  /// 修复重试时要传**原包**路径：产物虽然叫 `xxx_repaired.zip`，但用户要的是
+  /// `xxx_解压`，不该把"修过"这个内部痕迹写进他的文件夹名。
   Future<ArchiveReport> extract({
     required String archivePath,
     required String password,
     required DetectedFileType type,
+    String? outputNameFrom,
     void Function(double progress)? onProgress,
     bool Function()? isCancelled,
   }) async {
@@ -57,7 +61,7 @@ class ArchiveExtractService {
     }
 
     // 输出目录：与压缩包同级，重名自动加序号，绝不覆盖已有目录
-    final outDir = await _allocateOutputDir(archivePath);
+    final outDir = await _allocateOutputDir(archivePath, nameFrom: outputNameFrom);
     report.outputDir = outDir;
 
     // 空间预检：宁可"还没开始就告诉你磁盘不够"，也不要解到一半写满分区。
@@ -82,6 +86,13 @@ class ArchiveExtractService {
       '-bso0', // 屏蔽标准输出噪音，进度走 -bb1 的标准错误
       '-bsp1',
       '-bb1',
+      // 让 7-Zip 用 UTF-8 输出控制台文案。
+      //
+      // 不设的话，报错行里的文件名会按系统 OEM 代码页（简体中文 = 936）输出，
+      // 而本文件按 UTF-8 解码 → 失败清单里的中文名全成乱码。Dart 核心库没有
+      // GBK 码表，与其自己解码不如直接让 7-Zip 说 UTF-8。
+      // 注意这**只影响控制台输出**，与条目名本身的解读（-mcp）无关。
+      '-sccUTF-8',
       // ZIP 里未声明 UTF-8 的文件名按系统代码页（简体中文 = 936）解读。
       // 判定依据是标志位而不是"先解一次看有没有乱码"——乱码无法可靠识别。
       if (type == DetectedFileType.zip && await _zipNeedsLegacyCodePage(archivePath))
@@ -101,7 +112,7 @@ class ArchiveExtractService {
     // 密码错误时必须整目录丢弃。7-Zip 在密码不对时**仍然会在磁盘上留下
     // 0 字节的"壳文件"**，如果照实收集就会报告成"部分解出"——
     // 用户会以为拿到了数据，实际是空的。这比直接报错有害得多。
-    if (_looksLikeWrongPassword(run.output)) {
+    if (_hasGenuineWrongPassword(run.output)) {
       await _discard(outDir);
       report.status = ExtractStatus.failed;
       report.files.clear();
@@ -149,9 +160,7 @@ class ArchiveExtractService {
   String _explainFailure(DetectedFileType type, _RunResult run, bool canOpen) {
     final lower = run.output.toLowerCase();
 
-    if (lower.contains('wrong password') ||
-        lower.contains('password is not correct') ||
-        lower.contains('cannot open encrypted')) {
+    if (_hasGenuineWrongPassword(run.output)) {
       return '密码错误，无法解开该压缩包';
     }
     if (lower.contains('crc failed') || lower.contains('data error')) {
@@ -178,19 +187,30 @@ class ArchiveExtractService {
 
   // ───────────────────────── 目录与空间 ─────────────────────────
 
-  /// 分配输出目录 `<包名>_解压`，已存在则依次尝试 `(1)`、`(2)`。
-  Future<String> _allocateOutputDir(String archivePath) async {
+  /// `<包名>_解压` 的首选路径（不含重名序号）。
+  ///
+  /// 单独暴露出来，是因为"用哪个名字"和"重名怎么退让"是两件事：编排器在修复
+  /// 重试后要把目录名扶正，它需要知道首选名字，但不该自己去推序号。
+  static String preferredOutputDirFor(String archivePath) {
     final sep = Platform.pathSeparator;
     final fileName = archivePath.split(RegExp(r'[/\\]')).last;
     final dot = fileName.lastIndexOf('.');
     final base = dot > 0 ? fileName.substring(0, dot) : fileName;
     final parent = File(archivePath).parent.path;
+    return '$parent$sep${base}_解压';
+  }
 
-    var candidate = '$parent$sep${base}_解压';
+  /// 分配输出目录 `<包名>_解压`，已存在则依次尝试 `(1)`、`(2)`。
+  ///
+  /// 目录名以 [nameFrom] 为准（默认取 [archivePath]），见 [extract]。
+  Future<String> _allocateOutputDir(String archivePath, {String? nameFrom}) async {
+    final preferred = preferredOutputDirFor(nameFrom ?? archivePath);
+
+    var candidate = preferred;
     var n = 0;
     while (await Directory(candidate).exists()) {
       n++;
-      candidate = '$parent$sep${base}_解压($n)';
+      candidate = '$preferred($n)';
     }
     return candidate;
   }
@@ -337,12 +357,27 @@ class ArchiveExtractService {
     report.files.sort((a, b) => a.relativePath.compareTo(b.relativePath));
   }
 
-  /// 7-Zip 是否明确报了密码错误
-  bool _looksLikeWrongPassword(String output) {
+  /// 7-Zip 是否明确报了"密码不对"。
+  ///
+  /// 必须区分两句话，它们的含义完全相反：
+  ///   `ERROR: Wrong password : <名>`                              → 密码真的不对
+  ///   `ERROR: CRC Failed in encrypted file. Wrong password? : <名>` → 密文/结构损坏
+  ///
+  /// 后者是 ZipCrypto 的固有歧义：解出的明文 CRC 对不上时，7-Zip 无从分辨是
+  /// "密钥错"还是"密文被动过"，只好把两种可能塞进同一句并加个问号。但对我们
+  /// 而言结论天差地别——密码不对时修结构毫无意义（白拷一份大文件），而密文
+  /// 损坏恰恰**必须**继续走修复链路。所以凡是同一行里带 `CRC Failed` 的，
+  /// 一律按损坏处理，不算密码错误。
+  bool _hasGenuineWrongPassword(String output) {
     final lower = output.toLowerCase();
-    return lower.contains('wrong password') ||
-        lower.contains('password is not correct') ||
-        lower.contains('cannot open encrypted');
+    if (lower.contains('password is not correct')) return true;
+    if (lower.contains('cannot open encrypted')) return true;
+    for (final line in const LineSplitter().convert(lower)) {
+      if (!line.contains('wrong password')) continue;
+      if (line.contains('crc failed')) continue; // 损坏信号，不是密码错
+      return true;
+    }
+    return false;
   }
 
   /// 丢弃整个输出目录（密码错误、或被中止时用）
