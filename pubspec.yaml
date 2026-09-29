@@ -1,0 +1,44 @@
+name: hashcat_gui
+description: hashcat 图形化破解工具 - 拖拽文件自动识别并破解
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.13.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 桌面端拖拽文件
+  desktop_drop: ^0.8.4
+  # 移动端文件选择
+  file_picker: ^12.2.0
+  # 路径操作
+  path: ^1.8.3
+  # UUID 生成
+  uuid: ^4.0.0
+  # 状态管理
+  provider: ^6.1.1
+  # PC 端 HTTP 服务（含 shelf_io serve 函数）
+  shelf: ^1.4.1
+  # HTTP 客户端（手机端调用 PC）
+  http: ^1.1.0
+  # 设置持久化
+  shared_preferences: ^2.2.1
+  # 授权：SHA256 / HMAC 签名
+  crypto: ^3.0.6
+  # 授权：Android 硬件指纹采集
+  device_info_plus: ^13.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  # 注意：hashcat 内核、Python 运行时、提取工具、字典都不打进 Flutter 资源包，
+  # 而是统一放在可执行文件同级的 runtime/ 目录（由 AppPaths 相对解析）。
+  # 这样既减小了应用体积，也方便用户自行增删字典和替换内核。
+  assets: []

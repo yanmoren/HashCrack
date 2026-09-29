@@ -1,0 +1,20 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    avoid_print: false
+    use_key_in_widget_constructors: true
+    prefer_final_fields: true
+
+analyzer:
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - build/**
+    - android/**
+    - windows/**
+    # 临时校验脚本（不进产物，也不算进静态分析）
+    - t2/**
+    - scripts/**

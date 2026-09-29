@@ -1,0 +1,2 @@
+# 此目录存放哈希提取工具（zip2john.exe / pdf2john.py / office2john.py / hcxpcaptool.exe）
+# 运行 scripts/fetch_tools.ps1 自动获取

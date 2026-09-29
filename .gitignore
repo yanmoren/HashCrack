@@ -1,0 +1,67 @@
+# Flutter
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+*.lock
+!pubspec.lock
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Platform
+android/.gradle/
+android/local.properties
+android/key.properties
+ios/Pods/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+windows/flutter/generated_plugin_registrant.cc
+windows/flutter/ephemeral/
+
+# Generated
+*.g.dart
+.fvm/
+
+# ===== HashCrack 专有忽略规则 =====
+
+# 内置运行时依赖：体积巨大（hashcat / 便携 Python / hcxtools / 字典）
+# 使用者请从 Release 下载成品包，不要提交进仓库
+/runtime/
+/kernels/
+
+# 构建产物与分发包（进 Release，不进仓库）
+/dist/
+/build/
+
+# 内置 Flutter SDK（约 1 GB，绝不入库）
+/flutter_windows_3.47.3-stable/
+
+# Flutter 工具状态缓存
+.flutter_data/
+.flutter_settings
+.flutter_tool_state
+.flutter-plugins
+
+# 软著登记材料与授权工具（含个人信息 / 密钥生成器，不公开）
+/tools/
+
+# 开发过程中的内部笔记（非项目代码）
+.workbuddy/
+
+# 调试与测试残留
+test*.txt
+test*.py
+test*.potfile
+test*.zip
+test*.hash
+*.potfile
+*.out.txt
+*.log
