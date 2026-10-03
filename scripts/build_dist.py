@@ -57,6 +57,10 @@ APP_EXE_NAME = "HashCrack.exe"
 HASHCAT_JUNK_SUFFIX = (".restore", ".pid", ".outfiles", ".induct", ".log")
 RUNTIME_SKIP_TOP = {"work"}  # 破解临时目录
 
+# runtime/dicts 里只有这些内置字典随包分发；用户自备的大字典（几十 GB）不打包。
+# 软件会扫描运行目录下的 runtime\dicts 顶层自动加载，所以本地放多少都行。
+DICTS_KEEP = {"common.txt", "rockyou-top128k.txt"}
+
 GUIDE = """HashCrack — hashcat 图形化破解工具
 ========================================
 
@@ -209,11 +213,13 @@ def copy_build_output():
 
 
 def copy_runtime():
-    """项目 runtime/ → HashCrack/runtime，剔除 hashcat 运行垃圾。"""
+    """项目 runtime/ → HashCrack/runtime，剔除 hashcat 运行垃圾与用户自备大字典。"""
     if not RUNTIME.exists():
         raise SystemExit(f"缺少 runtime 目录: {RUNTIME}")
     dst_root = APP_DIR / "runtime"
     skipped = 0
+    dict_skipped = 0
+    dict_skipped_bytes = 0
     for cur, dirs, files in os.walk(RUNTIME):
         cur_p = Path(cur)
         rel = cur_p.relative_to(RUNTIME)
@@ -224,9 +230,18 @@ def copy_runtime():
             if f.lower().endswith(HASHCAT_JUNK_SUFFIX):
                 skipped += 1
                 continue
+            # 用户自备字典不随包分发，否则分发包会被撑到几十 GB
+            if rel == Path("dicts") and f not in DICTS_KEEP:
+                dict_skipped += 1
+                dict_skipped_bytes += (cur_p / f).stat().st_size
+                continue
             shutil.copy2(cur_p / f, dst_root / rel / f)
     log(f"runtime 已复制（hashcat + Python + 提取工具 + 7-Zip + 字典），"
         f"跳过 {skipped} 个运行临时文件")
+    if dict_skipped:
+        log(f"未打包 {dict_skipped} 个用户自备字典"
+            f"（{dict_skipped_bytes / 1024 / 1024 / 1024:.1f} GB），"
+            f"仅保留内置字典: {', '.join(sorted(DICTS_KEEP))}")
 
 
 def write_pc_extras():
